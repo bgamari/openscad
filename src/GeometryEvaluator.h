@@ -32,6 +32,15 @@ public:
      virtual Response visit(State &state, const TextNode &node);
      virtual Response visit(State &state, const OffsetNode &node);
 
+     shared_ptr<const class Geometry> do_render_node(const RenderNode &node);
+     shared_ptr<const Geometry> do_linear_extrude(const LinearExtrudeNode &node);
+     shared_ptr<const Geometry> do_csg_node(const CsgNode &node);
+     shared_ptr<const Geometry> do_transform_node(const TransformNode &node);
+     shared_ptr<const Geometry> do_rotate_extrude(const RotateExtrudeNode &node);
+     shared_ptr<const class Geometry> do_projection_node(const ProjectionNode &node);
+     shared_ptr<const Geometry> do_cgaladv_node(const CgaladvNode &node);
+     shared_ptr<const class Geometry> do_abstract_intersection_node(const AbstractIntersectionNode &node);
+
      const Tree &getTree() const { return this->tree; }
 
 private:
@@ -53,6 +62,7 @@ private:
           shared_ptr<const Geometry> const_pointer;
      };
 
+
      void smartCacheInsert(const AbstractNode &node, const shared_ptr<const Geometry> &geom);
      shared_ptr<const Geometry> smartCacheGet(const AbstractNode &node, bool preferNef = false);
      bool isSmartCached(const AbstractNode &node);
@@ -65,7 +75,7 @@ private:
      Polygon2d *applyToChildren2D(const AbstractNode &node, OpenSCADOperator op);
      ResultObject applyToChildren3D(const AbstractNode &node, OpenSCADOperator op);
      ResultObject applyToChildren(const AbstractNode &node, OpenSCADOperator op);
-     void addToParent(const State &state, const AbstractNode &node, const shared_ptr<const Geometry> &geom);
+     void addToParent(const State &state, const AbstractNode &node, shared_ptr<const Geometry> geom);
 
      std::map<int, Geometry::ChildList> visitedchildren;
      const Tree &tree;
