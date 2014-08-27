@@ -29,12 +29,24 @@
 
 #include <algorithm>
 #include <boost/foreach.hpp>
+#include <thread>
 
 #include <CGAL/convex_hull_2.h>
 #include <CGAL/Point_2.h>
 
+using std::async;
+using std::shared_future;
+
+template<typename T>
+shared_future<T> make_ready_shared_future(T value)
+{
+     std::promise<T> p;
+     p.set_value(value);
+     return p.get_future();
+}
+
 GeometryEvaluator::GeometryEvaluator(const class Tree &tree):
-     tree(tree)
+     tree(tree), tree_mutex()
 {
 }
 
@@ -80,7 +92,7 @@ shared_ptr<const Geometry> GeometryEvaluator::evaluateGeometry(const AbstractNod
 GeometryEvaluator::ResultObject GeometryEvaluator::applyToChildren(const AbstractNode &node, OpenSCADOperator op)
 {
      unsigned int dim = 0;
-     BOOST_FOREACH(Geometry::ChildItem &item, this->visitedchildren[node.index()]) {
+     BOOST_FOREACH(GeometryEvaluator::ChildItem &item, this->visitedchildren[node.index()]) {
           printf("applyToChild: %p\n", &item);
           if (item.second.get()) {
                if (!dim) dim = item.second.get()->getDimension();
@@ -187,9 +199,9 @@ Polygon2d *GeometryEvaluator::applyMinkowski2D(const AbstractNode &node)
 std::vector<const class Polygon2d *> GeometryEvaluator::collectChildren2D(const AbstractNode &node)
 {
      std::vector<const Polygon2d *> children;
-     BOOST_FOREACH(Geometry::ChildItem &item, this->visitedchildren[node.index()]) {
+     BOOST_FOREACH(GeometryEvaluator::ChildItem &item, this->visitedchildren[node.index()]) {
           const AbstractNode *chnode = item.first;
-          const shared_ptr<const Geometry> &chgeom = item.second;
+          const shared_ptr<const Geometry> &chgeom = item.second.get();
           // FIXME: Don't use deep access to modinst members
           if (chnode->modinst->isBackground()) continue;
 
@@ -221,6 +233,7 @@ std::vector<const class Polygon2d *> GeometryEvaluator::collectChildren2D(const 
 void GeometryEvaluator::smartCacheInsert(const AbstractNode &node,
                                          const shared_ptr<const Geometry> &geom)
 {
+     std::lock_guard<std::mutex> lock(this->tree_mutex);
      const std::string &key = this->tree.getIdString(node);
 
      shared_ptr<const CGAL_Nef_polyhedron> N = dynamic_pointer_cast<const CGAL_Nef_polyhedron>(geom);
@@ -245,6 +258,7 @@ bool GeometryEvaluator::isSmartCached(const AbstractNode &node)
 
 shared_ptr<const Geometry> GeometryEvaluator::smartCacheGet(const AbstractNode &node, bool preferNef)
 {
+     std::lock_guard<std::mutex> lock(this->tree_mutex);
      const std::string &key = this->tree.getIdString(node);
      shared_ptr<const Geometry> geom;
      bool hasgeom = GeometryCache::instance()->contains(key);
@@ -261,9 +275,9 @@ shared_ptr<const Geometry> GeometryEvaluator::smartCacheGet(const AbstractNode &
 Geometry::ChildList GeometryEvaluator::collectChildren3D(const AbstractNode &node)
 {
      Geometry::ChildList children;
-     BOOST_FOREACH(Geometry::ChildItem &item, this->visitedchildren[node.index()]) {
+     BOOST_FOREACH(GeometryEvaluator::ChildItem &item, this->visitedchildren[node.index()]) {
           const AbstractNode *chnode = item.first;
-          const shared_ptr<const Geometry> &chgeom = item.second;
+          const shared_ptr<const Geometry> &chgeom = item.second.get();
           // FIXME: Don't use deep access to modinst members
           if (chnode->modinst->isBackground()) continue;
 
@@ -335,7 +349,7 @@ Polygon2d *GeometryEvaluator::applyToChildren2D(const AbstractNode &node, OpenSC
 */
 void GeometryEvaluator::addToParent(const State &state,
                                     const AbstractNode &node,
-                                    shared_ptr<const Geometry> geom)
+                                    shared_future<shared_ptr<const Geometry> > geom)
 {
      this->visitedchildren.erase(node.index());
      if (state.parent()) {
@@ -343,7 +357,7 @@ void GeometryEvaluator::addToParent(const State &state,
      }
      else {
           // Root node, insert into cache
-          const shared_ptr<const Geometry> pgeom = geom;
+          const shared_ptr<const Geometry> pgeom = geom.get();
           smartCacheInsert(node, pgeom);
           this->root = pgeom;
           printf("addToParent: root=%p\n", pgeom.get());
@@ -364,7 +378,7 @@ Response GeometryEvaluator::visit(State &state, const AbstractNode &node)
           else {
                geom = smartCacheGet(node);
           }
-          addToParent(state, node, geom);
+          addToParent(state, node, make_ready_shared_future(geom));
      }
      return ContinueTraversal;
 }
@@ -391,7 +405,7 @@ Response GeometryEvaluator::visit(State &state, const OffsetNode &node)
           else {
                geom = smartCacheGet(node);
           }
-          addToParent(state, node, geom);
+          addToParent(state, node, make_ready_shared_future(geom));
      }
      return ContinueTraversal;
 }
@@ -430,9 +444,9 @@ Response GeometryEvaluator::visit(State &state, const RenderNode &node)
      if (state.isPostfix()) {
           if (!isSmartCached(node)) {
                //addToParent(state, node, async([&]() {return do_render_node(node);}));
-               addToParent(state, node, do_render_node(node));
+               addToParent(state, node, make_ready_shared_future(do_render_node(node)));
           } else {
-               addToParent(state, node, smartCacheGet(node));
+               addToParent(state, node, make_ready_shared_future(smartCacheGet(node)));
           }
      }
      return ContinueTraversal;
@@ -460,7 +474,7 @@ Response GeometryEvaluator::visit(State &state, const LeafNode &node)
                geom.reset(geometry);
           }
           else geom = smartCacheGet(node);
-          addToParent(state, node, geom);
+          addToParent(state, node, make_ready_shared_future(geom));
      }
      return PruneTraversal;
 }
@@ -480,7 +494,7 @@ Response GeometryEvaluator::visit(State &state, const TextNode &node)
                geom.reset(ClipperUtils::apply(polygonlist, ClipperLib::ctUnion));
           }
           else geom = GeometryCache::instance()->get(this->tree.getIdString(node));
-          addToParent(state, node, geom);
+          addToParent(state, node, make_ready_shared_future(geom));
      }
      return PruneTraversal;
 }
@@ -503,9 +517,10 @@ Response GeometryEvaluator::visit(State &state, const CsgNode &node)
      if (state.isPrefix() && isSmartCached(node)) return PruneTraversal;
      if (state.isPostfix()) {
           if (!isSmartCached(node)) {
-               addToParent(state, node, do_csg_node(node));
+               //addToParent(state, node, async([&]() {return do_csg_node(node);}));
+               addToParent(state, node, make_ready_shared_future(do_csg_node(node)));
           } else {
-               addToParent(state, node, smartCacheGet(node));
+               addToParent(state, node, make_ready_shared_future(smartCacheGet(node)));
           }
      }
      return ContinueTraversal;
@@ -579,9 +594,9 @@ Response GeometryEvaluator::visit(State &state, const TransformNode &node)
      if (state.isPostfix()) {
           if (!isSmartCached(node)) {
                //addToParent(state, node, async([&]() {return do_transform_node(node);}));
-               addToParent(state, node, do_transform_node(node));
+               addToParent(state, node, make_ready_shared_future(do_transform_node(node)));
           } else {
-               addToParent(state, node, smartCacheGet(node));
+               addToParent(state, node, make_ready_shared_future(smartCacheGet(node)));
           }
      }
      return ContinueTraversal;
@@ -736,9 +751,9 @@ Response GeometryEvaluator::visit(State &state, const LinearExtrudeNode &node)
      if (state.isPostfix()) {
           if (!isSmartCached(node)) {
                //addToParent(state, node, async([&]() {return do_linear_extrude(node);}));
-               addToParent(state, node, do_linear_extrude(node));
+               addToParent(state, node, make_ready_shared_future(do_linear_extrude(node)));
           } else {
-               addToParent(state, node, smartCacheGet(node));
+               addToParent(state, node, make_ready_shared_future(smartCacheGet(node)));
           }
      }
      return ContinueTraversal;
@@ -850,9 +865,9 @@ Response GeometryEvaluator::visit(State &state, const RotateExtrudeNode &node)
           shared_ptr<const Geometry> geom;
           if (!isSmartCached(node)) {
                //addToParent(state, node, async([&]() {return do_rotate_extrude(node);}));
-               addToParent(state, node, do_rotate_extrude(node));
+               addToParent(state, node, make_ready_shared_future(do_rotate_extrude(node)));
           } else {
-               addToParent(state, node, smartCacheGet(node));
+               addToParent(state, node, make_ready_shared_future(smartCacheGet(node)));
           }
      }
      return ContinueTraversal;
@@ -872,9 +887,9 @@ shared_ptr<const class Geometry> GeometryEvaluator::do_projection_node(const Pro
      shared_ptr<const class Geometry> geom;
      if (!node.cut_mode) {
           ClipperLib::Clipper sumclipper;
-          BOOST_FOREACH(Geometry::ChildItem &item, this->visitedchildren[node.index()]) {
+          BOOST_FOREACH(GeometryEvaluator::ChildItem &item, this->visitedchildren[node.index()]) {
                const AbstractNode *chnode = item.first;
-               const shared_ptr<const Geometry> &chgeom = item.second;
+               const shared_ptr<const Geometry> &chgeom = item.second.get();
                // FIXME: Don't use deep access to modinst members
                if (chnode->modinst->isBackground()) continue;
 
@@ -970,9 +985,10 @@ Response GeometryEvaluator::visit(State &state, const ProjectionNode &node)
      if (state.isPrefix() && isSmartCached(node)) return PruneTraversal;
      if (state.isPostfix()) {
           if (!isSmartCached(node)) {
-               addToParent(state, node, do_projection_node(node));
+               //addToParent(state, node, async([&]() {return do_projection_node(node);}));
+               addToParent(state, node, make_ready_shared_future(do_projection_node(node)));
           } else {
-               addToParent(state, node, smartCacheGet(node));
+               addToParent(state, node, make_ready_shared_future(smartCacheGet(node)));
           }
      }
      return ContinueTraversal;
@@ -1050,9 +1066,10 @@ Response GeometryEvaluator::visit(State &state, const CgaladvNode &node)
      if (state.isPrefix() && isSmartCached(node)) return PruneTraversal;
      if (state.isPostfix()) {
           if (!isSmartCached(node)) {
-               addToParent(state, node, do_cgaladv_node(node));
+               //addToParent(state, node, async([&]() {return do_cgaladv_node(node);}));
+               addToParent(state, node, make_ready_shared_future(do_cgaladv_node(node)));
           } else {
-               addToParent(state, node, smartCacheGet(node));
+               addToParent(state, node, make_ready_shared_future(smartCacheGet(node)));
           }
      }
      return ContinueTraversal;
@@ -1069,11 +1086,11 @@ Response GeometryEvaluator::visit(State &state, const AbstractIntersectionNode &
      if (state.isPostfix()) {
           shared_ptr<const class Geometry> geom;
           if (!isSmartCached(node)) {
-               geom = do_abstract_intersection_node(node);
+               //addToParent(state, node, async([&]() {return do_abstract_intersection_node(node);}));
+               addToParent(state, node, make_ready_shared_future(do_abstract_intersection_node(node)));
           } else {
-               geom = smartCacheGet(node);
+               addToParent(state, node, make_ready_shared_future(smartCacheGet(node)));
           }
-          addToParent(state, node, geom);
      }
      return ContinueTraversal;
 }

@@ -10,6 +10,9 @@
 #include <vector>
 #include <map>
 
+#include <mutex>
+#include <future>
+
 class GeometryEvaluator : public Visitor
 {
 public:
@@ -63,6 +66,9 @@ private:
      };
 
 
+     typedef std::pair<const class AbstractNode *, std::shared_future<shared_ptr<const Geometry> > > ChildItem;
+     typedef std::list<ChildItem> ChildList;
+
      void smartCacheInsert(const AbstractNode &node, const shared_ptr<const Geometry> &geom);
      shared_ptr<const Geometry> smartCacheGet(const AbstractNode &node, bool preferNef = false);
      bool isSmartCached(const AbstractNode &node);
@@ -75,10 +81,11 @@ private:
      Polygon2d *applyToChildren2D(const AbstractNode &node, OpenSCADOperator op);
      ResultObject applyToChildren3D(const AbstractNode &node, OpenSCADOperator op);
      ResultObject applyToChildren(const AbstractNode &node, OpenSCADOperator op);
-     void addToParent(const State &state, const AbstractNode &node, shared_ptr<const Geometry> geom);
+     void addToParent(const State &state, const AbstractNode &node, std::shared_future<shared_ptr<const Geometry> > geom);
 
-     std::map<int, Geometry::ChildList> visitedchildren;
+     std::map<int, ChildList> visitedchildren;
      const Tree &tree;
+     std::mutex tree_mutex;
      shared_ptr<const Geometry> root;
 
 public:
