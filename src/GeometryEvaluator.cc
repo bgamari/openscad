@@ -590,8 +590,7 @@ Response GeometryEvaluator::visit(State &state, const TransformNode &node)
      if (state.isPrefix() && isSmartCached(node)) return PruneTraversal;
      if (state.isPostfix()) {
           if (!isSmartCached(node)) {
-               //addToParent(state, node, async([&]() {return do_transform_node(node);}));
-               addToParent(state, node, make_ready_shared_future(do_transform_node(node)));
+               addToParent(state, node, async(std::launch::async, [&]() {return do_transform_node(node);}));
           } else {
                addToParent(state, node, make_ready_shared_future(smartCacheGet(node)));
           }
