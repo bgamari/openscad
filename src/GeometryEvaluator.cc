@@ -351,7 +351,6 @@ void GeometryEvaluator::addToParent(const State &state,
                                     const AbstractNode &node,
                                     shared_future<shared_ptr<const Geometry> > geom)
 {
-     this->visitedchildren.erase(node.index());
      if (state.parent()) {
           this->visitedchildren[state.parent()->index()].push_back(std::make_pair(&node, geom));
      }
@@ -516,8 +515,7 @@ Response GeometryEvaluator::visit(State &state, const CsgNode &node)
      if (state.isPrefix() && isSmartCached(node)) return PruneTraversal;
      if (state.isPostfix()) {
           if (!isSmartCached(node)) {
-               //addToParent(state, node, async([&]() {return do_csg_node(node);}));
-               addToParent(state, node, make_ready_shared_future(do_csg_node(node)));
+               addToParent(state, node, async([&]() {return do_csg_node(node);}));
           } else {
                addToParent(state, node, make_ready_shared_future(smartCacheGet(node)));
           }
